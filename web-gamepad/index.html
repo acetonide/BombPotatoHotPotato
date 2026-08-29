@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Bomb Potato — Gamepad</title>
+<style>
+  :root{
+    --stage-bg-1: #0B0B0E;
+    --stage-bg-2: #16161C;
+    --ember: #3A3A42;
+    --hot-1: #FF4B1F;
+    --hot-2: #FF8A1E;
+    --ink: #F2EFE9;
+    --ink-dim: #8A8A93;
+    --ok: #52D68A;
+    --warn: #FFC94A;
+  }
+
+  *{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  html, body{
+    margin:0; padding:0; height:100%; width:100%;
+    overflow:hidden;
+    background: var(--stage-bg-1);
+    touch-action: manipulation;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  #app{
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    transition: background 320ms ease;
+    background:
+      radial-gradient(ellipse at 50% 30%, var(--stage-bg-2) 0%, var(--stage-bg-1) 70%);
+  }
+
+  /* ---------- STATE: idle-unassigned ---------- */
+  #app.state-idle-unassigned{
+    background: radial-gradient(ellipse at 50% 30%, var(--stage-bg-2) 0%, var(--stage-bg-1) 70%);
+  }
+
+  /* ---------- STATE: idle ---------- */
+  #app.state-idle{
+    background: radial-gradient(ellipse at 50% 30%, var(--stage-bg-2) 0%, var(--stage-bg-1) 70%);
+  }
+
+  /* ---------- STATE: active (hot potato!) ---------- */
+  #app.state-active{
+    background: radial-gradient(ellipse at 50% 45%, var(--hot-2) 0%, var(--hot-1) 55%, #B8200A 100%);
+    animation: fuseBreathe 1.1s ease-in-out infinite;
+  }
+
+  @keyframes fuseBreathe{
+    0%, 100% { filter: brightness(1); }
+    50% { filter: brightness(1.14); }
+  }
+
+  #app.flash-fallback{
+    animation: hardFlash 260ms ease-out 4;
+  }
+  @keyframes hardFlash{
+    0%, 100% { filter: brightness(1); }
+    50% { filter: brightness(2.2); }
+  }
+
+  /* ---------- Center content ---------- */
+  #center{
+    position: relative;
+    z-index: 2;
+    display:flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 24px;
+    text-align: center;
+    pointer-events: none;
+  }
+
+  #eyebrow{
+    font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
+    font-size: 12px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+  .state-active #eyebrow{ color: rgba(255,255,255,0.75); }
+
+  #headline{
+    font-size: clamp(28px, 9vw, 54px);
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    line-height: 1.05;
+    transform: rotate(0deg);
+  }
+  .state-active #headline{
+    color: #fff;
+    transform: rotate(-2deg);
+    text-shadow: 0 6px 30px rgba(0,0,0,0.35);
+    animation: pulseText 1.1s ease-in-out infinite;
+  }
+  @keyframes pulseText{
+    0%, 100% { transform: rotate(-2deg) scale(1); }
+    50% { transform: rotate(-2deg) scale(1.045); }
+  }
+
+  #subline{
+    font-size: 14px;
+    color: var(--ink-dim);
+    max-width: 280px;
+  }
+  .state-active #subline{ color: rgba(255,255,255,0.85); }
+
+  #playerBadge{
+    font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
+    font-size: 13px;
+    color: var(--ink-dim);
+    letter-spacing: 0.04em;
+    margin-top: 4px;
+  }
+
+  /* ---------- Swipe surface ---------- */
+  #swipeSurface{
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    touch-action: none;
+  }
+
+  /* ---------- Status pill (top) ---------- */
+  #statusBar{
+    position: fixed;
+    top: env(safe-area-inset-top, 0px);
+    left: 0; right: 0;
+    display:flex;
+    justify-content: center;
+    padding-top: 14px;
+    z-index: 5;
+    pointer-events: none;
+  }
+  #statusPill{
+    font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    color: var(--ink-dim);
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    padding: 6px 12px;
+    border-radius: 999px;
+    display:flex;
+    align-items:center;
+    gap: 6px;
+  }
+  #statusDot{
+    width:6px; height:6px; border-radius:50%;
+    background: var(--ink-dim);
+  }
+  #statusDot.ok{ background: var(--ok); }
+  #statusDot.warn{ background: var(--warn); }
+
+  /* ---------- Debug drawer ---------- */
+  #debugTab{
+    position: fixed;
+    bottom: env(safe-area-inset-bottom, 0px);
+    right: 0;
+    z-index: 20;
+    font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--ink-dim);
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-bottom: none;
+    border-right: none;
+    padding: 8px 14px;
+    border-radius: 10px 0 0 0;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+  }
+
+  #debugPanel{
+    position: fixed;
+    bottom: 0; right: 0;
+    z-index: 21;
+    width: min(320px, 100vw);
+    max-height: 70vh;
+    overflow-y: auto;
+    background: rgba(10,10,13,0.94);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px 0 0 0;
+    padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    transform: translateY(110%);
+    transition: transform 220ms ease;
+    font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
+  }
+  #debugPanel.open{ transform: translateY(0); }
+
+  #debugPanel h3{
+    margin: 0 0 10px 0;
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+  }
+
+  .debugRow{
+    display:flex;
+    gap: 8px;
+    margin-bottom: 8px;
+    align-items:center;
+  }
+  .debugRow input{
+    flex: 1;
+    min-width: 0;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.12);
+    color: var(--ink);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+  }
+  .debugRow button, .debugFullBtn{
+    background: var(--ember);
+    color: var(--ink);
+    border: 1px solid rgba(255,255,255,0.14);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .debugRow button:active, .debugFullBtn:active{ background: #4a4a54; }
+  .debugFullBtn{ width: 100%; margin-bottom: 10px; }
+
+  #debugLog{
+    margin-top: 10px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    padding-top: 10px;
+    font-size: 10px;
+    color: var(--ink-dim);
+    line-height: 1.6;
+    max-height: 140px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  #wakeNote{
+    font-size: 10px;
+    color: var(--ink-dim);
+    opacity: 0.7;
+    margin-top: 6px;
+    line-height: 1.5;
+  }
+
+  audio{ display:none; }
+</style>
+</head>
+<body>
+
+<div id="app" class="state-idle-unassigned">
+
+  <div id="statusBar">
+    <div id="statusPill">
+      <div id="statusDot"></div>
+      <span id="statusText">belum tergabung</span>
+    </div>
+  </div>
+
+  <div id="swipeSurface"></div>
+
+  <div id="center">
+    <div id="eyebrow" id="eyebrowText">BOMB POTATO</div>
+    <div id="headline" id="headlineText">Swipe untuk gabung</div>
+    <div id="subline" id="sublineText">Ayunkan jari ke arah mana saja di layar ini untuk mengambil slot.</div>
+    <div id="playerBadge"></div>
+  </div>
+
+  <div id="debugTab" onclick="toggleDebug()">DEBUG</div>
+
+  <div id="debugPanel">
+    <h3>Simulasi Pesan (Fase 2, tanpa Unity)</h3>
+
+    <button class="debugFullBtn" onclick="debugAssign()">Kirim slot_assigned (auto playerId)</button>
+
+    <div class="debugRow">
+      <input id="assignIdInput" placeholder="playerId, mis. P1" value="P1">
+      <button onclick="debugAssignCustom()">Assign</button>
+    </div>
+
+    <div class="debugRow">
+      <input id="bombIdInput" placeholder="playerId penerima bom">
+      <button onclick="debugBombReceived()">bomb_received</button>
+    </div>
+
+    <button class="debugFullBtn" onclick="debugBombReceivedSelf()">bomb_received → ke saya sendiri</button>
+    <button class="debugFullBtn" onclick="debugBombPassedAway()">bomb_received → ke pemain lain (jadi idle)</button>
+    <button class="debugFullBtn" onclick="resetLocal()">Reset (hapus playerId lokal)</button>
+
+    <div id="wakeNote"></div>
+    <div id="debugLog"></div>
+  </div>
+
+</div>
+
+<script>
+/* =========================================================================
+   BOMB POTATO — WEB GAMEPAD (FASE 2)
+   Mengikuti INTERFACE_CONTRACT_Fase1_Fase2.md persis:
+   - Section 1 / 1A: format pesan & alur assignment playerId
+   - Section 3: 3 state UI (idle-unassigned / idle / active)
+   - Section 4 & GDD Section 8: vibration + fallback iOS
+   - Section 5: simulasi debug tanpa koneksi Unity asli
+   Tidak ada koneksi WebRTC asli di fase ini — semua "kirim pesan" ke Unity
+   di bawah ini hanya di-log ke console (placeholder utk Fase 3).
+   ========================================================================= */
+
+  // ---------------- CONFIG (bisa di-tune) ----------------
+  const CONFIG = {
+    swipeThresholdPx: 40,      // jarak minimum drag utk dianggap swipe
+    swipeMaxDurationMs: 700,   // durasi maksimum gesture supaya tidak dianggap drag lambat
+    vibrationPatternMs: 200,   // Section 8 GDD: getar ~200ms saat menerima bom
+    fallbackFlashCount: 4,     // jumlah kedipan flash utk fallback iOS
+  };
+
+  // ---------------- STATE ----------------
+  let playerId = null;           // null = belum di-assign (idle-unassigned)
+  let isHoldingBomb = false;      // true = state 'active'
+  let uiState = 'idle-unassigned'; // 'idle-unassigned' | 'idle' | 'active'
+
+  // ---------------- DOM refs ----------------
+  const appEl = document.getElementById('app');
+  const swipeSurface = document.getElementById('swipeSurface');
+  const eyebrowText = document.getElementById('eyebrowText');
+  const headlineText = document.getElementById('headlineText');
+  const sublineText = document.getElementById('sublineText');
+  const playerBadge = document.getElementById('playerBadge');
+  const statusText = document.getElementById('statusText');
+  const statusDot = document.getElementById('statusDot');
+  const debugLog = document.getElementById('debugLog');
+  const wakeNote = document.getElementById('wakeNote');
+
+  // =========================================================================
+  // "NETWORK" PLACEHOLDER — Fase 3 akan mengganti fungsi ini dengan kirim
+  // asli lewat WebRTC DataChannel. Untuk sekarang cukup log ke console &
+  // debug log, sesuai Interface Contract Section 5.
+  // =========================================================================
+  function sendToUnity(payload){
+    log('→ (kirim ke Unity, placeholder) ' + JSON.stringify(payload));
+    console.log('[WebGamepad→Unity]', payload);
+  }
+
+  function log(msg){
+    const time = new Date().toLocaleTimeString();
+    debugLog.textContent = `[${time}] ${msg}\n` + debugLog.textContent;
+  }
+
+  // ---------------- STATE RENDERING ----------------
+  function setUiState(next){
+    uiState = next;
+    appEl.classList.remove('state-idle-unassigned', 'state-idle', 'state-active');
+    appEl.classList.add('state-' + next);
+
+    if(next === 'idle-unassigned'){
+      eyebrowText.textContent = 'BOMB POTATO';
+      headlineText.textContent = 'Swipe untuk gabung';
+      sublineText.textContent = 'Ayunkan jari ke arah mana saja di layar ini untuk mengambil slot.';
+      playerBadge.textContent = '';
+      statusText.textContent = 'belum tergabung';
+      statusDot.className = '';
+    } else if(next === 'idle'){
+      eyebrowText.textContent = 'STANDBY';
+      headlineText.textContent = 'Menunggu giliran';
+      sublineText.textContent = 'Area swipe nonaktif sampai kamu memegang bom.';
+      playerBadge.textContent = playerId;
+      statusText.textContent = 'tergabung';
+      statusDot.className = 'ok';
+    } else if(next === 'active'){
+      eyebrowText.textContent = 'GILIRAN KAMU';
+      headlineText.textContent = 'Giliran Kamu!';
+      sublineText.textContent = 'Swipe sekarang: atas / bawah / kiri / kanan.';
+      playerBadge.textContent = playerId;
+      statusText.textContent = 'memegang bom';
+      statusDot.className = 'warn';
+    }
+  }
+
+  // ---------------- INCOMING MESSAGE HANDLERS ----------------
+  // (Dipanggil manual oleh tombol debug sekarang; Fase 3 akan memanggil
+  //  fungsi yang SAMA persis saat pesan datang dari DataChannel asli.)
+
+  function handleSlotAssigned(newPlayerId){
+    playerId = newPlayerId;
+    isHoldingBomb = false;
+    log(`← slot_assigned diterima, playerId = ${newPlayerId}`);
+    setUiState('idle');
+  }
+
+  function handleBombReceived(targetPlayerId){
+    if(playerId === null){
+      log('⚠ bomb_received diabaikan: belum punya playerId (idle-unassigned)');
+      return;
+    }
+    if(targetPlayerId === playerId){
+      isHoldingBomb = true;
+      log(`← bomb_received untuk SAYA (${playerId}) → state active`);
+      setUiState('active');
+      triggerBombVibration();
+    } else {
+      isHoldingBomb = false;
+      log(`← bomb_received untuk pemain lain (${targetPlayerId}) → state idle`);
+      setUiState('idle');
+    }
+  }
+
+  // ---------------- VIBRATION (Section 4 & GDD Section 8) ----------------
+  function triggerBombVibration(){
+    const supported = 'vibrate' in navigator;
+    if(supported){
+      const ok = navigator.vibrate(CONFIG.vibrationPatternMs);
+      log(`vibrate(${CONFIG.vibrationPatternMs}) → ${ok ? 'ok' : 'gagal (browser menolak)'}`);
+      if(!ok){
+        fallbackFeedback();
+      }
+    } else {
+      log('Vibration API tidak didukung (kemungkinan iOS Safari) → pakai fallback');
+      fallbackFeedback();
+    }
+  }
+
+  function fallbackFeedback(){
+    // Fallback untuk browser tanpa Vibration API (terutama iOS Safari):
+    // flash warna layar (sudah otomatis mencolok krn state active) +
+    // audio placeholder sederhana.
+    appEl.classList.remove('flash-fallback');
+    void appEl.offsetWidth; // restart animasi
+    appEl.classList.add('flash-fallback');
+    playFallbackTone();
+  }
+
+  // Audio placeholder super sederhana pakai WebAudio (tanpa file asset,
+  // supaya tetap ringan / <1MB bundle). Beep pendek 200ms.
+  let audioCtx = null;
+  function playFallbackTone(){
+    try{
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = 880;
+      gain.gain.value = 0.06;
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.2);
+    } catch(e){
+      log('Audio fallback gagal: ' + e.message);
+    }
+  }
+
+  // ---------------- WAKE LOCK API ----------------
+  let wakeLockRef = null;
+  async function requestWakeLock(){
+    if('wakeLock' in navigator){
+      try{
+        wakeLockRef = await navigator.wakeLock.request('screen');
+        wakeNote.textContent = 'Wake Lock aktif — layar tidak akan mati sendiri.';
+        log('Wake Lock aktif.');
+        wakeLockRef.addEventListener('release', () => {
+          log('Wake Lock dilepas (mis. tab pindah background).');
+        });
+      } catch(err){
+        wakeNote.textContent = 'Wake Lock gagal diaktifkan: ' + err.message;
+        log('Wake Lock error: ' + err.message);
+      }
+    } else {
+      // Placeholder fallback note untuk iOS Safari (tidak mendukung Wake Lock API).
+      wakeNote.textContent = 'Wake Lock API tidak didukung di browser ini (umumnya iOS Safari). ' +
+        'Layar bisa mati sendiri saat idle — belum ada workaround di Fase 2, ' +
+        'kandidat solusi (video loop tersembunyi dsb) menyusul di fase polish.';
+      log('Wake Lock API tidak tersedia di browser ini.');
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState === 'visible' && 'wakeLock' in navigator && !wakeLockRef){
+      requestWakeLock();
+    }
+  });
+
+  // ---------------- SWIPE GESTURE DETECTION ----------------
+  let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
+  let touchActive = false;
+
+  swipeSurface.addEventListener('touchstart', (e) => {
+    if(e.touches.length !== 1) return;
+    touchActive = true;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    touchStartTime = Date.now();
+  }, {passive: true});
+
+  swipeSurface.addEventListener('touchend', (e) => {
+    if(!touchActive) return;
+    touchActive = false;
+    const touch = e.changedTouches[0];
+    handleGestureEnd(touch.clientX, touch.clientY, touchStartX, touchStartY, Date.now() - touchStartTime);
+  }, {passive: true});
+
+  // Dukungan mouse (utk testing di desktop browser)
+  let mouseDown = false;
+  swipeSurface.addEventListener('mousedown', (e) => {
+    mouseDown = true;
+    touchStartX = e.clientX;
+    touchStartY = e.clientY;
+    touchStartTime = Date.now();
+  });
+  window.addEventListener('mouseup', (e) => {
+    if(!mouseDown) return;
+    mouseDown = false;
+    handleGestureEnd(e.clientX, e.clientY, touchStartX, touchStartY, Date.now() - touchStartTime);
+  });
+
+  function handleGestureEnd(endX, endY, startX, startY, durationMs){
+    const dx = endX - startX;
+    const dy = endY - startY;
+    const absDx = Math.abs(dx);
+    const absDy = Math.abs(dy);
+    const distance = Math.sqrt(dx*dx + dy*dy);
+
+    if(distance < CONFIG.swipeThresholdPx) return; // terlalu pendek, bukan swipe
+    if(durationMs > CONFIG.swipeMaxDurationMs) return; // terlalu lambat, kemungkinan drag bukan swipe
+
+    // Rule gating sesuai Interface Contract:
+    // - idle-unassigned: swipe area TETAP aktif (untuk trigger join/assignment)
+    // - idle (sudah assigned, tidak pegang bom): swipe area nonaktif
+    // - active: swipe area aktif
+    if(uiState === 'idle' && playerId !== null){
+      log('Swipe diabaikan: state idle (bukan giliran kamu), swipe area nonaktif.');
+      return;
+    }
+
+    let direction;
+    if(absDx > absDy){
+      direction = dx > 0 ? 'right' : 'left';
+    } else {
+      direction = dy > 0 ? 'down' : 'up';
+    }
+
+    sendSwipe(direction);
+  }
+
+  function sendSwipe(direction){
+    // Section 1A: swipe PERTAMA (sebelum playerId ter-assign) dikirim
+    // dengan playerId null, memicu Unity meng-assign slot.
+    const payload = {
+      type: 'swipe',
+      playerId: playerId, // null jika belum di-assign
+      direction: direction
+    };
+    sendToUnity(payload);
+
+    if(playerId === null){
+      sublineText.textContent = 'Menunggu penempatan slot dari Unity...';
+    }
+  }
+
+  // ---------------- DEBUG PANEL ----------------
+  function toggleDebug(){
+    document.getElementById('debugPanel').classList.toggle('open');
+  }
+
+  function debugAssign(){
+    // Auto-generate playerId dummy berikutnya utk kemudahan test.
+    const n = Math.floor(Math.random() * 6) + 1;
+    handleSlotAssigned('P' + n);
+  }
+
+  function debugAssignCustom(){
+    const val = document.getElementById('assignIdInput').value.trim();
+    if(!val){ log('⚠ isi playerId dulu utk assign manual.'); return; }
+    handleSlotAssigned(val);
+  }
+
+  function debugBombReceived(){
+    const val = document.getElementById('bombIdInput').value.trim();
+    if(!val){ log('⚠ isi playerId penerima bom dulu.'); return; }
+    handleBombReceived(val);
+  }
+
+  function debugBombReceivedSelf(){
+    if(playerId === null){
+      log('⚠ belum punya playerId, assign dulu.');
+      return;
+    }
+    handleBombReceived(playerId);
+  }
+
+  function debugBombPassedAway(){
+    handleBombReceived('P_LAIN_DUMMY');
+  }
+
+  function resetLocal(){
+    playerId = null;
+    isHoldingBomb = false;
+    log('Local playerId direset. Kembali ke idle-unassigned.');
+    setUiState('idle-unassigned');
+  }
+
+  // ---------------- INIT ----------------
+  setUiState('idle-unassigned');
+  requestWakeLock();
+  log('Web Gamepad siap. Menunggu koneksi P2P (placeholder, Fase 3) & interaksi debug.');
+
+</script>
+
+</body>
+</html>
