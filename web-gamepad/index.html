@@ -95,7 +95,7 @@
   }
   .state-active #eyebrowText{ color: rgba(255,255,255,0.75); }
 
-  #headline{
+  #headlineText{
     font-size: clamp(28px, 9vw, 54px);
     font-weight: 800;
     letter-spacing: -0.01em;
@@ -103,7 +103,7 @@
     line-height: 1.05;
     transform: rotate(0deg);
   }
-  .state-active #headline{
+  .state-active #headlineText{
     color: #fff;
     transform: rotate(-2deg);
     text-shadow: 0 6px 30px rgba(0,0,0,0.35);
@@ -114,12 +114,12 @@
     50% { transform: rotate(-2deg) scale(1.045); }
   }
 
-  #subline{
+  #sublineText{
     font-size: 14px;
     color: var(--ink-dim);
     max-width: 280px;
   }
-  .state-active #subline{ color: rgba(255,255,255,0.85); }
+  .state-active #sublineText{ color: rgba(255,255,255,0.85); }
 
   #playerBadge{
     font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
@@ -265,6 +265,22 @@
     line-height: 1.5;
   }
 
+  #hwStatusBox{
+    margin-bottom: 10px;
+  }
+  .hwRow{
+    display:flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--ink-dim);
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .hwRow span:first-child{ color: var(--ink); }
+  .hwRow span:last-child.hw-ok{ color: var(--ok); }
+  .hwRow span:last-child.hw-fail{ color: #FF6B6B; }
+  .hwRow span:last-child.hw-pending{ color: var(--warn); }
+
   audio{ display:none; }
 </style>
 </head>
@@ -283,8 +299,8 @@
 
   <div id="center">
     <div id="eyebrowText">BOMB POTATO</div>
-    <div id="headline" id="headlineText">Swipe untuk gabung</div>
-    <div id="subline" id="sublineText">Ayunkan jari ke arah mana saja di layar ini untuk mengambil slot.</div>
+    <div id="headlineText">Swipe untuk gabung</div>
+    <div id="sublineText">Ayunkan jari ke arah mana saja di layar ini untuk mengambil slot.</div>
     <div id="playerBadge"></div>
   </div>
 
@@ -308,6 +324,13 @@
     <button class="debugFullBtn" onclick="debugBombReceivedSelf()">bomb_received → ke saya sendiri</button>
     <button class="debugFullBtn" onclick="debugBombPassedAway()">bomb_received → ke pemain lain (jadi idle)</button>
     <button class="debugFullBtn" onclick="resetLocal()">Reset (hapus playerId lokal)</button>
+
+    <h3 style="margin-top:14px;">Status Hardware</h3>
+    <div id="hwStatusBox">
+      <div class="hwRow"><span>Wake Lock</span><span id="hwWakeLock">belum dicoba</span></div>
+      <div class="hwRow"><span>Vibration</span><span id="hwVibrate">belum dicoba</span></div>
+      <div class="hwRow"><span>Audio</span><span id="hwAudio">belum dicoba</span></div>
+    </div>
 
     <div id="wakeNote"></div>
     <div id="debugLog"></div>
@@ -351,6 +374,15 @@
   const statusDot = document.getElementById('statusDot');
   const debugLog = document.getElementById('debugLog');
   const wakeNote = document.getElementById('wakeNote');
+  const hwWakeLock = document.getElementById('hwWakeLock');
+  const hwVibrate = document.getElementById('hwVibrate');
+  const hwAudio = document.getElementById('hwAudio');
+
+  function setHwStatus(el, state, text){
+    // state: 'ok' | 'fail' | 'pending'
+    el.className = 'hw-' + state;
+    el.textContent = text;
+  }
 
   // =========================================================================
   // "NETWORK" PLACEHOLDER — Fase 3 akan mengganti fungsi ini dengan kirim
@@ -417,6 +449,7 @@
       isHoldingBomb = true;
       log(`← bomb_received untuk SAYA (${playerId}) → state active`);
       setUiState('active');
+      unlockHardware(); // jaga-jaga kalau ini pesan pertama sebelum ada sentuhan sama sekali
       triggerBombVibration();
     } else {
       isHoldingBomb = false;
@@ -431,11 +464,15 @@
     if(supported){
       const ok = navigator.vibrate(CONFIG.vibrationPatternMs);
       log(`vibrate(${CONFIG.vibrationPatternMs}) → ${ok ? 'ok' : 'gagal (browser menolak)'}`);
-      if(!ok){
+      if(ok){
+        setHwStatus(hwVibrate, 'ok', 'aktif ✓');
+      } else {
+        setHwStatus(hwVibrate, 'fail', 'ditolak browser');
         fallbackFeedback();
       }
     } else {
       log('Vibration API tidak didukung (kemungkinan iOS Safari) → pakai fallback');
+      setHwStatus(hwVibrate, 'fail', 'tidak didukung');
       fallbackFeedback();
     }
   }
@@ -456,6 +493,7 @@
   function playFallbackTone(){
     try{
       audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if(audioCtx.state === 'suspended'){ audioCtx.resume(); }
       const osc = audioCtx.createOscillator();
       const gain = audioCtx.createGain();
       osc.type = 'square';
@@ -464,8 +502,10 @@
       osc.connect(gain).connect(audioCtx.destination);
       osc.start();
       osc.stop(audioCtx.currentTime + 0.2);
+      setHwStatus(hwAudio, 'ok', 'aktif ✓');
     } catch(e){
       log('Audio fallback gagal: ' + e.message);
+      setHwStatus(hwAudio, 'fail', 'error: ' + e.message);
     }
   }
 
@@ -477,12 +517,16 @@
         wakeLockRef = await navigator.wakeLock.request('screen');
         wakeNote.textContent = 'Wake Lock aktif — layar tidak akan mati sendiri.';
         log('Wake Lock aktif.');
+        setHwStatus(hwWakeLock, 'ok', 'aktif ✓');
         wakeLockRef.addEventListener('release', () => {
           log('Wake Lock dilepas (mis. tab pindah background).');
+          wakeLockRef = null;
+          setHwStatus(hwWakeLock, 'pending', 'dilepas, akan diminta ulang');
         });
       } catch(err){
         wakeNote.textContent = 'Wake Lock gagal diaktifkan: ' + err.message;
         log('Wake Lock error: ' + err.message);
+        setHwStatus(hwWakeLock, 'fail', 'gagal: ' + err.message);
       }
     } else {
       // Placeholder fallback note untuk iOS Safari (tidak mendukung Wake Lock API).
@@ -490,6 +534,7 @@
         'Layar bisa mati sendiri saat idle — belum ada workaround di Fase 2, ' +
         'kandidat solusi (video loop tersembunyi dsb) menyusul di fase polish.';
       log('Wake Lock API tidak tersedia di browser ini.');
+      setHwStatus(hwWakeLock, 'fail', 'tidak didukung browser ini');
     }
   }
 
@@ -498,6 +543,35 @@
       requestWakeLock();
     }
   });
+
+  // ---------------- UNLOCK HARDWARE ON FIRST TOUCH ----------------
+  // Chrome Android mensyaratkan "user activation" langsung sebelum
+  // navigator.vibrate() / AudioContext boleh jalan. Wake Lock juga lebih
+  // reliable diminta setelah ada interaksi. Jadi kita "pancing" semuanya
+  // di sentuhan PERTAMA pengguna di halaman ini (bukan cuma di swipe area),
+  // supaya saat bomb_received asli datang nanti (dari Unity via Fase 3),
+  // vibrate/audio sudah dalam kondisi "diizinkan" oleh browser.
+  let hardwareUnlocked = false;
+  function unlockHardware(){
+    if(hardwareUnlocked) return;
+    hardwareUnlocked = true;
+    requestWakeLock();
+    // "Pancingan" micro-vibrate 1ms: di beberapa browser ini yang membuka
+    // izin vibrate untuk panggilan berikutnya yang dipicu dari kode
+    // (bukan langsung dari event klik), misalnya saat state active dipicu
+    // dari pesan bomb_received (bukan dari klik tombol debug itu sendiri).
+    if('vibrate' in navigator){
+      try{ navigator.vibrate(1); } catch(e){}
+    }
+    // Buka AudioContext dari status 'suspended' (kebijakan autoplay browser).
+    try{
+      audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+      if(audioCtx.state === 'suspended'){ audioCtx.resume(); }
+    } catch(e){}
+    log('Hardware unlock terpasang (sentuhan pertama terdeteksi).');
+  }
+  window.addEventListener('touchstart', unlockHardware, {passive: true});
+  window.addEventListener('pointerdown', unlockHardware, {passive: true});
 
   // ---------------- SWIPE GESTURE DETECTION ----------------
   let touchStartX = 0, touchStartY = 0, touchStartTime = 0;
