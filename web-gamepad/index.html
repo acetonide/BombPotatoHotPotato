@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Bomb Potato — Gamepad</title>
+<!-- Fase 3: PeerJS client untuk koneksi P2P asli ke Unity (host). -->
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <style>
   :root{
     --stage-bg-1: #0B0B0E;
@@ -168,6 +170,62 @@
   #statusDot.ok{ background: var(--ok); }
   #statusDot.warn{ background: var(--warn); }
 
+  /* ---------- Fase 3: manual room code fallback (Section 7.9) ---------- */
+  #connectPanel{
+    position: relative;
+    z-index: 3;
+    display: none; /* di-toggle lewat JS: updateConnectPanelVisibility() */
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    margin-top: 18px;
+    padding: 14px 18px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 14px;
+    max-width: 260px;
+  }
+  #connectPanel.visible{ display: flex; }
+  #connectPanelLabel{
+    font-size: 12px;
+    color: var(--ink-dim);
+    text-align: center;
+  }
+  #connectPanelRow{
+    display:flex;
+    gap: 8px;
+  }
+  #connectPanelRow input{
+    width: 100px;
+    font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
+    font-size: 18px;
+    letter-spacing: 0.1em;
+    text-align: center;
+    padding: 8px 6px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.15);
+    background: rgba(0,0,0,0.25);
+    color: var(--ink);
+  }
+  #connectPanelRow button{
+    font-size: 13px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: none;
+    background: var(--hot-1);
+    color: #fff;
+    font-weight: 600;
+  }
+  #connectPanelRow button:active{ background: var(--hot-2); }
+  #connectPanelStatus{
+    font-size: 11px;
+    color: var(--ink-dim);
+    min-height: 14px;
+    text-align: center;
+  }
+  #connectPanelStatus.err{ color: var(--hot-1); }
+  #connectPanelStatus.ok{ color: var(--ok); }
+
   /* ---------- Debug drawer ---------- */
   #debugTab{
     position: fixed;
@@ -304,6 +362,18 @@
     <div id="playerBadge"></div>
   </div>
 
+  <!-- Fase 3 (Section 7.9): fallback manual room code, muncul kalau scan QR
+       gagal / device dibuka tanpa parameter ?room= sama sekali. Disembunyikan
+       otomatis begitu koneksi P2P berhasil (lihat updateConnectPanelVisibility). -->
+  <div id="connectPanel">
+    <div id="connectPanelLabel">Masukkan room code dari layar utama</div>
+    <div id="connectPanelRow">
+      <input id="roomCodeInput" inputmode="numeric" maxlength="4" placeholder="0000">
+      <button id="connectPanelBtn" onclick="handleManualConnectPressed()">Sambungkan</button>
+    </div>
+    <div id="connectPanelStatus"></div>
+  </div>
+
   <div id="debugTab" onclick="toggleDebug()">DEBUG</div>
 
   <div id="debugPanel">
@@ -340,14 +410,17 @@
 
 <script>
 /* =========================================================================
-   BOMB POTATO — WEB GAMEPAD (FASE 2)
-   Mengikuti INTERFACE_CONTRACT_Fase1_Fase2.md persis:
+   BOMB POTATO — WEB GAMEPAD (FASE 3 — Networking Integration)
+   Mengikuti INTERFACE_CONTRACT_UnityWebGamepad.md persis:
    - Section 1 / 1A: format pesan & alur assignment playerId
    - Section 3: 3 state UI (idle-unassigned / idle / active)
    - Section 4 & GDD Section 8: vibration + fallback iOS
-   - Section 5: simulasi debug tanpa koneksi Unity asli
-   Tidak ada koneksi WebRTC asli di fase ini — semua "kirim pesan" ke Unity
-   di bawah ini hanya di-log ke console (placeholder utk Fase 3).
+   - Section 7: PeerJS/WebRTC P2P asli (REVISI dari Fase 2 — placeholder
+     sendToUnity() sekarang benar-benar mengirim lewat DataChannel).
+   - Section 7.9: manual room code entry sebagai fallback kalau scan QR gagal.
+   Tombol debug panel (Fase 2) TETAP DIPERTAHANKAN — masih berguna untuk
+   testing tanpa koneksi Unity asli, dan tidak mengganggu jalur asli karena
+   keduanya sama-sama lewat handleSlotAssigned/handleBombReceived.
    ========================================================================= */
 
   // ---------------- CONFIG (bisa di-tune) ----------------
@@ -363,6 +436,28 @@
   let isHoldingBomb = false;      // true = state 'active'
   let uiState = 'idle-unassigned'; // 'idle-unassigned' | 'idle' | 'active'
 
+  // ---------------- Fase 3: PeerJS state ----------------
+  let myPeer = null;
+  let unityConnection = null; // DataConnection ke Unity (host)
+  let isConnectedToUnity = false;
+
+  // Custom peer ID PERSISTEN — identitas stabil device ini, dipakai Unity
+  // untuk reconnect-recognition (Interface Contract Section 1A revisi,
+  // keputusan final: "PeerJS custom ID yang di-generate & disimpan di HP").
+  // BUKAN random default PeerJS broker.
+  function getOrCreateMyPeerId(){
+    const STORAGE_KEY = 'bombpotato_peer_id';
+    let id = localStorage.getItem(STORAGE_KEY);
+    if(!id){
+      // Cukup unik untuk skala casual play (bukan cryptographic-grade) —
+      // kombinasi timestamp + random, tidak akan collide dalam praktik.
+      id = 'hp' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      localStorage.setItem(STORAGE_KEY, id);
+    }
+    return id;
+  }
+  const myPeerId = getOrCreateMyPeerId();
+
   // ---------------- DOM refs ----------------
   const appEl = document.getElementById('app');
   const swipeSurface = document.getElementById('swipeSurface');
@@ -377,6 +472,9 @@
   const hwWakeLock = document.getElementById('hwWakeLock');
   const hwVibrate = document.getElementById('hwVibrate');
   const hwAudio = document.getElementById('hwAudio');
+  const connectPanel = document.getElementById('connectPanel');
+  const connectPanelStatus = document.getElementById('connectPanelStatus');
+  const roomCodeInput = document.getElementById('roomCodeInput');
 
   function setHwStatus(el, state, text){
     // state: 'ok' | 'fail' | 'pending'
@@ -385,13 +483,147 @@
   }
 
   // =========================================================================
-  // "NETWORK" PLACEHOLDER — Fase 3 akan mengganti fungsi ini dengan kirim
-  // asli lewat WebRTC DataChannel. Untuk sekarang cukup log ke console &
-  // debug log, sesuai Interface Contract Section 5.
+  // Fase 3: koneksi P2P asli ke Unity (host). Unity = host dengan ID = room
+  // code; HP = connect dengan custom peer ID sendiri (lihat myPeerId di atas).
+  // TIDAK ada TURN server (disepakati) — kalau gagal connect, ditampilkan
+  // pesan graceful, tidak ada fallback relay.
+  // =========================================================================
+
+  function connectToUnity(roomCode){
+    if(!roomCode){
+      showConnectStatus('Room code kosong.', 'err');
+      return;
+    }
+    roomCode = roomCode.trim();
+    if(!roomCode){
+      showConnectStatus('Room code kosong.', 'err');
+      return;
+    }
+
+    if(typeof Peer === 'undefined'){
+      showConnectStatus('Gagal memuat library koneksi. Coba refresh halaman.', 'err');
+      log('⚠ PeerJS library tidak termuat.');
+      return;
+    }
+
+    showConnectStatus('Menghubungkan...', '');
+    log(`Mencoba connect ke room ${roomCode} (peer id saya: ${myPeerId})`);
+
+    if(myPeer && !myPeer.destroyed){
+      // Sudah ada Peer instance dari attempt sebelumnya (mis. retry manual
+      // setelah gagal) — reuse, jangan bikin instance baru dengan ID sama
+      // (PeerJS broker akan menolak ID yang masih aktif).
+      openConnectionTo(roomCode);
+      return;
+    }
+
+    myPeer = new Peer(myPeerId);
+
+    myPeer.on('open', () => {
+      openConnectionTo(roomCode);
+    });
+
+    myPeer.on('error', (err) => {
+      log(`⚠ Peer error: ${err.type || err.message}`);
+      isConnectedToUnity = false;
+      updateConnectPanelVisibility();
+      showConnectStatus('Koneksi gagal, coba jaringan WiFi lain', 'err');
+    });
+
+    myPeer.on('disconnected', () => {
+      log('⚠ Terputus dari signaling server (broker).');
+    });
+  }
+
+  function openConnectionTo(roomCode){
+    // reliable/ordered: default DataConnection PeerJS SUDAH ordered+reliable
+    // selama tidak di-set reliable:false secara eksplisit (Interface Contract
+    // Section 7.3 — TIDAK di-override di sini, jadi sudah sesuai kontrak).
+    const conn = myPeer.connect(roomCode);
+
+    conn.on('open', () => {
+      unityConnection = conn;
+      isConnectedToUnity = true;
+      updateConnectPanelVisibility();
+      showConnectStatus('Terhubung!', 'ok');
+      log(`Terhubung ke Unity (room ${roomCode}).`);
+    });
+
+    conn.on('data', (data) => {
+      handleIncomingFromUnity(data);
+    });
+
+    conn.on('close', () => {
+      isConnectedToUnity = false;
+      unityConnection = null;
+      updateConnectPanelVisibility();
+      log('⚠ Koneksi ke Unity terputus.');
+      showConnectStatus('Terputus dari layar utama.', 'err');
+    });
+
+    conn.on('error', (err) => {
+      log(`⚠ DataConnection error: ${err.type || err.message}`);
+      showConnectStatus('Koneksi gagal, coba jaringan WiFi lain', 'err');
+    });
+  }
+
+  /// Pesan MENTAH dari Unity (host) — parse lalu rutekan ke handler yang
+  /// SAMA PERSIS dengan yang dipakai tombol debug (Interface Contract:
+  /// format pesan identik terlepas dari sumbernya).
+  function handleIncomingFromUnity(raw){
+    let msg;
+    try {
+      msg = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch(e){
+      log(`⚠ Gagal parse pesan dari Unity: ${raw}`);
+      return;
+    }
+
+    if(!msg || !msg.type){
+      log(`⚠ Pesan dari Unity tanpa field 'type': ${JSON.stringify(msg)}`);
+      return;
+    }
+
+    if(msg.type === 'slot_assigned'){
+      handleSlotAssigned(msg.playerId);
+    } else if(msg.type === 'bomb_received'){
+      handleBombReceived(msg.playerId);
+    } else {
+      log(`⚠ Tipe pesan tidak dikenal dari Unity: ${msg.type}`);
+    }
+  }
+
+  function showConnectStatus(text, kind){
+    connectPanelStatus.textContent = text;
+    connectPanelStatus.className = kind || '';
+  }
+
+  /// Panel manual room code HANYA tampil kalau: belum ter-assign playerId
+  /// DAN belum berhasil connect ke Unity. Begitu salah satu terpenuhi
+  /// (assigned ATAU connected), panel disembunyikan.
+  function updateConnectPanelVisibility(){
+    const shouldShow = (playerId === null) && !isConnectedToUnity;
+    connectPanel.classList.toggle('visible', shouldShow);
+  }
+
+  function handleManualConnectPressed(){
+    connectToUnity(roomCodeInput.value);
+  }
+
+  // =========================================================================
+  // "NETWORK" — REVISI Fase 3: sekarang benar-benar mengirim lewat
+  // DataChannel PeerJS. Fallback ke log-only kalau belum ada koneksi (mis.
+  // sebelum sempat connect, atau saat testing lewat debug panel).
   // =========================================================================
   function sendToUnity(payload){
-    log('→ (kirim ke Unity, placeholder) ' + JSON.stringify(payload));
+    log('→ ' + JSON.stringify(payload));
     console.log('[WebGamepad→Unity]', payload);
+
+    if(unityConnection && unityConnection.open){
+      unityConnection.send(JSON.stringify(payload));
+    } else {
+      log('⚠ Belum terhubung ke Unity — pesan TIDAK terkirim (cuma di-log lokal).');
+    }
   }
 
   function log(msg){
@@ -438,6 +670,7 @@
     isHoldingBomb = false;
     log(`← slot_assigned diterima, playerId = ${newPlayerId}`);
     setUiState('idle');
+    updateConnectPanelVisibility();
   }
 
   function handleBombReceived(targetPlayerId){
@@ -690,12 +923,31 @@
     isHoldingBomb = false;
     log('Local playerId direset. Kembali ke idle-unassigned.');
     setUiState('idle-unassigned');
+    updateConnectPanelVisibility();
   }
 
   // ---------------- INIT ----------------
   setUiState('idle-unassigned');
   requestWakeLock();
-  log('Web Gamepad siap. Menunggu koneksi P2P (placeholder, Fase 3) & interaksi debug.');
+
+  // Section 7.9: QR = URL + room code sekaligus. Kalau halaman dibuka lewat
+  // scan QR (ada ?room=xxxx di URL), auto-connect TANPA input tambahan.
+  // Kalau tidak ada (buka manual / scan gagal), tampilkan connectPanel
+  // untuk fallback manual entry.
+  (function initialConnect(){
+    const params = new URLSearchParams(window.location.search);
+    const roomFromUrl = params.get('room');
+
+    if(roomFromUrl){
+      log(`Room code dari URL (scan QR): ${roomFromUrl}`);
+      connectToUnity(roomFromUrl);
+    } else {
+      log('Tidak ada room code di URL — tampilkan input manual.');
+    }
+    updateConnectPanelVisibility();
+  })();
+
+  log('Web Gamepad siap. myPeerId = ' + myPeerId);
 
 </script>
 
