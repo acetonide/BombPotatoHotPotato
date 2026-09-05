@@ -610,6 +610,8 @@
       handleEliminated(msg.playerId);
     } else if(msg.type === 'game_over'){
       handleGameOver(msg.winnerPlayerId);
+    } else if(msg.type === 'removed_from_slot'){
+      handleRemovedFromSlot();
     } else {
       log(`⚠ Tipe pesan tidak dikenal dari Unity: ${msg.type}`);
     }
@@ -661,8 +663,10 @@
 
     if(next === 'idle-unassigned'){
       eyebrowText.textContent = 'BOMB POTATO';
-      headlineText.textContent = 'Swipe untuk gabung';
-      sublineText.textContent = 'Ayunkan jari ke arah mana saja di layar ini untuk mengambil slot.';
+      headlineText.textContent = (opts && opts.removedNotice) ? 'Kamu dikeluarkan dari game' : 'Swipe untuk gabung';
+      sublineText.textContent = (opts && opts.removedNotice)
+        ? 'Host mengeluarkanmu dari slot. Ayunkan jari ke arah mana saja untuk gabung lagi.'
+        : 'Ayunkan jari ke arah mana saja di layar ini untuk mengambil slot.';
       playerBadge.textContent = '';
       statusText.textContent = 'belum tergabung';
       statusDot.className = '';
@@ -760,6 +764,36 @@
     const isWinner = (playerId !== null && winnerPlayerId === playerId);
     log(`← game_over diterima, winnerPlayerId=${winnerPlayerId} → ${isWinner ? 'MENANG' : 'kalah'}`);
     setUiState('game_over', { isWinner });
+  }
+
+  /// FIX bug "HP tetap menampilkan dirinya assigned setelah di-remove dari
+  /// Lobby": pesan baru dari Unity (LobbyController.RemoveSlot ->
+  /// NetworkLobbyBridge.SendRemovedFromSlot), lihat
+  /// INTERFACE_CONTRACT_UnityWebGamepad.md untuk spesifikasi format pesan.
+  ///
+  /// TIDAK menyentuh myPeerId/localStorage sama sekali — itu identitas
+  /// koneksi PeerJS permanen device ini (dipakai untuk reconnect
+  /// recognition), BUKAN soal assignment slot. Yang direset di sini murni
+  /// state assignment in-memory (playerId, isHoldingBomb), sama seperti
+  /// device yang belum pernah join sama sekali.
+  ///
+  /// Selalu diproses APAPUN uiState saat ini (tidak ada guard seperti di
+  /// handleBombReceived) — beda dari bomb_received yang boleh diabaikan
+  /// kalau state sudah final (eliminated/game_over), removed_from_slot
+  /// justru HARUS selalu bisa mengeluarkan device dari state apa pun,
+  /// termasuk dari game_over/eliminated (mis. host me-remove pemain yang
+  /// sudah gugur/game sudah selesai tapi belum tekan Main Lagi).
+  ///
+  /// Swipe area otomatis aktif lagi setelah ini karena 'idle-unassigned'
+  /// adalah state paling awal yang sudah mendukung swipe-to-join (lihat
+  /// handleGestureEnd: hanya diblok kalau uiState 'eliminated'/'game_over',
+  /// TIDAK diblok untuk 'idle-unassigned') — tidak perlu logic tambahan.
+  function handleRemovedFromSlot(){
+    log(`← removed_from_slot diterima (playerId lama: ${playerId}) → kembali ke idle-unassigned`);
+    playerId = null;
+    isHoldingBomb = false;
+    setUiState('idle-unassigned', { removedNotice: true });
+    updateConnectPanelVisibility();
   }
 
   // ---------------- VIBRATION (Section 4 & GDD Section 8) ----------------
