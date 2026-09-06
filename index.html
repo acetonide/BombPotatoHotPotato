@@ -241,6 +241,56 @@
   #connectPanelStatus.err{ color: var(--hot-1); }
   #connectPanelStatus.ok{ color: var(--ok); }
 
+  /* ---------- Fase 3B: layar "Terputus" (murni deteksi native sisi client) ---------- */
+  #disconnectedOverlay{
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 24px;
+    text-align: center;
+    background: rgba(8,8,10,0.96);
+  }
+  #disconnectedOverlay.visible{ display: flex; }
+  #disconnectedTitle{
+    font-size: clamp(24px, 8vw, 40px);
+    font-weight: 800;
+    color: var(--ink);
+  }
+  #disconnectedSubline{
+    font-size: 14px;
+    color: var(--ink-dim);
+    max-width: 280px;
+  }
+  #disconnectedRoomCode{
+    font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
+    font-size: 32px;
+    letter-spacing: 0.12em;
+    color: var(--ink);
+    margin-top: 4px;
+  }
+  #disconnectedReconnectBtn{
+    margin-top: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    padding: 12px 28px;
+    border-radius: 10px;
+    border: none;
+    background: var(--hot-1);
+    color: #fff;
+  }
+  #disconnectedReconnectBtn:active{ background: var(--hot-2); }
+  #disconnectedReconnectBtn:disabled{ opacity: 0.5; }
+  #disconnectedStatus{
+    font-size: 12px;
+    color: var(--ink-dim);
+    min-height: 16px;
+  }
+
   /* ---------- Debug drawer ---------- */
   #debugTab{
     position: fixed;
@@ -426,6 +476,22 @@
 
 </div>
 
+<!-- Fase 3B (poin 2 & 5): layar "Terputus" — murni deteksi native sisi client
+     (navigator.onLine, event offline, conn.on('close')/peer.on('disconnected')),
+     TIDAK dipicu pesan apapun dari Unity (Interface Contract Section 1B).
+     Menutupi state app manapun di baliknya (z-index lebih tinggi). Dua sumber
+     disconnect ditangani dengan pesan berbeda: 'network' (WiFi HP putus,
+     terdeteksi lewat window 'offline'/peer.on('disconnected')) vs 'host'
+     (laptop/Unity yang mati, terdeteksi lewat conn.on('close') sementara
+     signaling ke broker sendiri masih hidup). -->
+<div id="disconnectedOverlay">
+  <div id="disconnectedTitle">Terputus</div>
+  <div id="disconnectedSubline">Koneksi ke layar utama terputus.</div>
+  <div id="disconnectedRoomCode"></div>
+  <button id="disconnectedReconnectBtn" onclick="handleInstantReconnectPressed()">Sambung Ulang</button>
+  <div id="disconnectedStatus"></div>
+</div>
+
 <script>
 /* =========================================================================
    BOMB POTATO — WEB GAMEPAD (FASE 3 — Networking Integration)
@@ -493,6 +559,11 @@
   const connectPanel = document.getElementById('connectPanel');
   const connectPanelStatus = document.getElementById('connectPanelStatus');
   const roomCodeInput = document.getElementById('roomCodeInput');
+  const disconnectedOverlay = document.getElementById('disconnectedOverlay');
+  const disconnectedSubline = document.getElementById('disconnectedSubline');
+  const disconnectedRoomCode = document.getElementById('disconnectedRoomCode');
+  const disconnectedReconnectBtn = document.getElementById('disconnectedReconnectBtn');
+  const disconnectedStatus = document.getElementById('disconnectedStatus');
 
   function setHwStatus(el, state, text){
     // state: 'ok' | 'fail' | 'pending'
@@ -506,6 +577,17 @@
   // TIDAK ada TURN server (disepakati) — kalau gagal connect, ditampilkan
   // pesan graceful, tidak ada fallback relay.
   // =========================================================================
+
+  // Fase 3B (poin 2): room code TERAKHIR yang berhasil dipakai, disimpan di
+  // localStorage supaya layar "Terputus" bisa menawarkan reconnect instan
+  // (peer.connect(roomCode) yang sama) TANPA perlu scan QR ulang.
+  const ROOM_CODE_STORAGE_KEY = 'bombpotato_last_room_code';
+  function saveLastRoomCode(roomCode){
+    try{ localStorage.setItem(ROOM_CODE_STORAGE_KEY, roomCode); } catch(e){}
+  }
+  function getLastRoomCode(){
+    try{ return localStorage.getItem(ROOM_CODE_STORAGE_KEY); } catch(e){ return null; }
+  }
 
   function connectToUnity(roomCode){
     if(!roomCode){
@@ -550,6 +632,9 @@
 
     myPeer.on('disconnected', () => {
       log('⚠ Terputus dari signaling server (broker).');
+      isConnectedToUnity = false;
+      updateConnectPanelVisibility();
+      showDisconnectedScreen('network');
     });
   }
 
@@ -562,7 +647,9 @@
     conn.on('open', () => {
       unityConnection = conn;
       isConnectedToUnity = true;
+      saveLastRoomCode(roomCode);
       updateConnectPanelVisibility();
+      hideDisconnectedScreen();
       showConnectStatus('Terhubung!', 'ok');
       log(`Terhubung ke Unity (room ${roomCode}).`);
     });
@@ -577,6 +664,7 @@
       updateConnectPanelVisibility();
       log('⚠ Koneksi ke Unity terputus.');
       showConnectStatus('Terputus dari layar utama.', 'err');
+      showDisconnectedScreen('host'); // Fase 3B poin 5: disconnect host/laptop terdeteksi dari sisi HP
     });
 
     conn.on('error', (err) => {
@@ -612,6 +700,10 @@
       handleGameOver(msg.winnerPlayerId);
     } else if(msg.type === 'removed_from_slot'){
       handleRemovedFromSlot();
+    } else if(msg.type === 'heartbeat_ping'){
+      // Fase 3B (poin 1&2): balas pong secepatnya, TIDAK menyentuh state UI
+      // apapun — murni keep-alive supaya Unity tahu device ini masih hidup.
+      sendToUnity({ type: 'heartbeat_pong' });
     } else {
       log(`⚠ Tipe pesan tidak dikenal dari Unity: ${msg.type}`);
     }
@@ -621,6 +713,87 @@
     connectPanelStatus.textContent = text;
     connectPanelStatus.className = kind || '';
   }
+
+  // =========================================================================
+  // Fase 3B (poin 2 & 5): layar "Terputus" — MURNI deteksi native sisi client,
+  // Unity TIDAK PERNAH memicu ini lewat pesan apapun (Interface Contract
+  // Section 1B). Dua sumber:
+  //   - 'network': WiFi HP sendiri putus (window 'offline' ATAU
+  //     myPeer.on('disconnected') — signaling ke broker PeerJS terputus).
+  //   - 'host': laptop/Unity yang mati/tutup tab, terdeteksi lewat
+  //     conn.on('close') pada DataConnection ke Unity, SEMENTARA broker
+  //     sendiri (myPeer) masih hidup dan HP masih online secara jaringan.
+  // Overlay TIDAK menutup otomatis kalau device offline total (tombol
+  // reconnect akan gagal sampai jaringan kembali) — cukup coba lagi manual.
+  // =========================================================================
+  function showDisconnectedScreen(source){
+    const roomCode = getLastRoomCode();
+
+    disconnectedSubline.textContent = source === 'network'
+      ? 'Koneksi WiFi/data HP kamu terputus.'
+      : 'Koneksi ke layar utama (laptop) terputus.';
+
+    if(roomCode){
+      disconnectedRoomCode.textContent = roomCode;
+      disconnectedReconnectBtn.disabled = false;
+      disconnectedReconnectBtn.textContent = 'Sambung Ulang';
+    } else {
+      // Belum pernah berhasil connect sama sekali sebelumnya (tidak ada room
+      // code tersimpan) — tombol reconnect instan tidak ada gunanya, arahkan
+      // ke fallback manual entry biasa.
+      disconnectedRoomCode.textContent = '';
+      disconnectedReconnectBtn.disabled = true;
+      disconnectedReconnectBtn.textContent = 'Tidak ada room code tersimpan';
+    }
+
+    disconnectedStatus.textContent = '';
+    disconnectedOverlay.classList.add('visible');
+    log(`Layar Terputus ditampilkan (sumber: ${source}).`);
+  }
+
+  function hideDisconnectedScreen(){
+    disconnectedOverlay.classList.remove('visible');
+  }
+
+  function handleInstantReconnectPressed(){
+    const roomCode = getLastRoomCode();
+    if(!roomCode){
+      disconnectedStatus.textContent = 'Tidak ada room code tersimpan.';
+      return;
+    }
+    disconnectedStatus.textContent = 'Menyambungkan ulang...';
+    disconnectedReconnectBtn.disabled = true;
+
+    // reconnect ke room code yang SAMA, pakai myPeerId yang SAMA juga
+    // (persisten di localStorage) — Unity akan mencocokkan ke slot lama
+    // via PlayerRegistry (Interface Contract Section 0 & 1A), tanpa perlu
+    // scan QR ulang sama sekali.
+    connectToUnity(roomCode);
+
+    // Re-enable tombol setelah jeda singkat kalau masih gagal (mis. Unity
+    // benar-benar mati/masih belum nyala lagi) supaya pemain bisa coba lagi,
+    // bukan macet permanen menekan tombol yang disabled.
+    setTimeout(() => {
+      if(!isConnectedToUnity){
+        disconnectedReconnectBtn.disabled = false;
+        disconnectedStatus.textContent = 'Belum berhasil, coba lagi.';
+      }
+    }, 4000);
+  }
+
+  // ---- Deteksi native: WiFi/data HP sendiri terputus ----
+  window.addEventListener('offline', () => {
+    log('⚠ Browser melaporkan window "offline" (jaringan HP terputus).');
+    showDisconnectedScreen('network');
+  });
+
+  window.addEventListener('online', () => {
+    log('Browser melaporkan window "online" kembali.');
+    // TIDAK auto-reconnect di sini — biarkan pemain menekan tombol Sambung
+    // Ulang sendiri (konsisten dengan alur "host" disconnect), supaya tidak
+    // ada 2 upaya connect() yang bentrok kalau PeerJS sendiri juga sedang
+    // mencoba auto-reconnect ke broker di background.
+  });
 
   /// Panel manual room code HANYA tampil kalau: belum ter-assign playerId
   /// DAN belum berhasil connect ke Unity. Begitu salah satu terpenuhi
