@@ -266,12 +266,11 @@
     color: var(--ink-dim);
     max-width: 280px;
   }
-  #disconnectedRoomCode{
-    font-family: "SF Mono", "Roboto Mono", ui-monospace, monospace;
-    font-size: 32px;
-    letter-spacing: 0.12em;
-    color: var(--ink);
-    margin-top: 4px;
+  #disconnectedInstruction{
+    font-size: 13px;
+    color: var(--ink-dim);
+    max-width: 260px;
+    line-height: 1.5;
   }
   #disconnectedReconnectBtn{
     margin-top: 10px;
@@ -285,17 +284,6 @@
   }
   #disconnectedReconnectBtn:active{ background: var(--hot-2); }
   #disconnectedReconnectBtn:disabled{ opacity: 0.5; }
-  #disconnectedUseOtherRoomBtn{
-    margin-top: 6px;
-    font-size: 13px;
-    font-weight: 500;
-    padding: 10px 20px;
-    border-radius: 10px;
-    border: 1px solid var(--ember);
-    background: transparent;
-    color: var(--ink-dim);
-  }
-  #disconnectedUseOtherRoomBtn:active{ background: var(--ember); }
   #disconnectedStatus{
     font-size: 12px;
     color: var(--ink-dim);
@@ -498,9 +486,8 @@
 <div id="disconnectedOverlay">
   <div id="disconnectedTitle">Terputus</div>
   <div id="disconnectedSubline">Koneksi ke layar utama terputus.</div>
-  <div id="disconnectedRoomCode"></div>
-  <button id="disconnectedReconnectBtn" onclick="handleInstantReconnectPressed()">Sambung Ulang</button>
-  <button id="disconnectedUseOtherRoomBtn" onclick="handleUseDifferentRoomPressed()">Pakai Room Code Lain</button>
+  <div id="disconnectedInstruction">Scan ulang QR code di layar utama, atau tekan tombol di bawah untuk coba gabung lagi.</div>
+  <button id="disconnectedReconnectBtn" onclick="handleTryRejoinPressed()">Coba Gabung Lagi</button>
   <div id="disconnectedStatus"></div>
 </div>
 
@@ -573,7 +560,6 @@
   const roomCodeInput = document.getElementById('roomCodeInput');
   const disconnectedOverlay = document.getElementById('disconnectedOverlay');
   const disconnectedSubline = document.getElementById('disconnectedSubline');
-  const disconnectedRoomCode = document.getElementById('disconnectedRoomCode');
   const disconnectedReconnectBtn = document.getElementById('disconnectedReconnectBtn');
   const disconnectedStatus = document.getElementById('disconnectedStatus');
 
@@ -599,9 +585,6 @@
   }
   function getLastRoomCode(){
     try{ return localStorage.getItem(ROOM_CODE_STORAGE_KEY); } catch(e){ return null; }
-  }
-  function clearLastRoomCode(){
-    try{ localStorage.removeItem(ROOM_CODE_STORAGE_KEY); } catch(e){}
   }
 
   function connectToUnity(roomCode){
@@ -707,7 +690,7 @@
       }
 
       showConnectStatus('Koneksi gagal, coba jaringan WiFi lain', 'err');
-      disconnectedStatus.textContent = 'Belum berhasil setelah ~1 menit. Coba tekan Sambung Ulang sekali lagi.';
+      disconnectedStatus.textContent = 'Belum berhasil setelah ~1 menit. Coba tekan Coba Gabung Lagi sekali lagi.';
       disconnectedReconnectBtn.disabled = false;
     });
 
@@ -823,30 +806,24 @@
   //   - 'host': laptop/Unity yang mati/tutup tab, terdeteksi lewat
   //     conn.on('close') pada DataConnection ke Unity, SEMENTARA broker
   //     sendiri (myPeer) masih hidup dan HP masih online secara jaringan.
-  // Overlay TIDAK menutup otomatis kalau device offline total (tombol
-  // reconnect akan gagal sampai jaringan kembali) — cukup coba lagi manual.
+  //
+  // REVISI (disederhanakan atas permintaan): TIDAK ADA lagi tombol
+  // "Sambung Ulang Instan" yang menjanjikan kecepatan — reconnect ke
+  // peerId yang sama SELALU bisa lambat (sampai ~1 menit, keterbatasan
+  // broker PeerJS Cloud, lihat createFreshPeer) dan itu tidak bisa
+  // dihindari dari sisi kode manapun. Sekarang HANYA pesan "Terputus" +
+  // instruksi untuk scan ulang QR ATAU tekan SATU tombol simpel untuk
+  // coba gabung lagi (diam-diam tetap pakai retry sabar di createFreshPeer,
+  // tapi TANPA janji instan di teksnya).
   // =========================================================================
   function showDisconnectedScreen(source){
-    const roomCode = getLastRoomCode();
-
     disconnectedSubline.textContent = source === 'network'
       ? 'Koneksi WiFi/data HP kamu terputus.'
       : 'Koneksi ke layar utama (laptop) terputus.';
 
-    if(roomCode){
-      disconnectedRoomCode.textContent = roomCode;
-      disconnectedReconnectBtn.disabled = false;
-      disconnectedReconnectBtn.textContent = 'Sambung Ulang';
-    } else {
-      // Belum pernah berhasil connect sama sekali sebelumnya (tidak ada room
-      // code tersimpan) — tombol reconnect instan tidak ada gunanya, arahkan
-      // ke fallback manual entry biasa.
-      disconnectedRoomCode.textContent = '';
-      disconnectedReconnectBtn.disabled = true;
-      disconnectedReconnectBtn.textContent = 'Tidak ada room code tersimpan';
-    }
-
     disconnectedStatus.textContent = '';
+    disconnectedReconnectBtn.disabled = false;
+    disconnectedReconnectBtn.textContent = 'Coba Gabung Lagi';
     disconnectedOverlay.classList.add('visible');
     log(`Layar Terputus ditampilkan (sumber: ${source}).`);
   }
@@ -855,14 +832,17 @@
     disconnectedOverlay.classList.remove('visible');
   }
 
-  function handleInstantReconnectPressed(){
+  function handleTryRejoinPressed(){
     const roomCode = getLastRoomCode();
     if(!roomCode){
-      disconnectedStatus.textContent = 'Tidak ada room code tersimpan.';
+      // Tidak ada room code tersimpan sama sekali (device ini belum pernah
+      // berhasil connect) -> satu-satunya jalan memang scan QR ulang,
+      // tidak ada yang bisa dicoba dari tombol ini.
+      disconnectedStatus.textContent = 'Tidak ada room code tersimpan — scan ulang QR code.';
       return;
     }
 
-    disconnectedStatus.textContent = 'Menyambungkan ulang...';
+    disconnectedStatus.textContent = 'Menghubungkan...';
     disconnectedReconnectBtn.disabled = true;
 
     if(unityConnection){
@@ -875,46 +855,7 @@
       myPeer = null;
     }
 
-    // Akar masalah sebenarnya BUKAN soal cara membersihkan instance lama di
-    // sini (destroy() ini sudah cukup) — melainkan broker PeerJS yang masih
-    // menahan myPeerId lama sampai heartbeat timeout-nya sendiri lewat
-    // (lihat komentar besar di createFreshPeer). createFreshPeer SUDAH
-    // menangani retry sabar untuk itu, jadi cukup panggil langsung di sini.
     createFreshPeer(roomCode);
-  }
-
-  function handleUseDifferentRoomPressed(){
-    // Kembali ke panel input manual dari nol — bukan reconnect ke room
-    // manapun, jadi tidak butuh retry logic (peerId belum tentu bentrok
-    // dengan room baru yang akan diketik/discan pemain).
-    if(unityConnection){
-      unityConnection.off('close');
-      try{ unityConnection.close(); }catch(e){}
-      unityConnection = null;
-    }
-    if(myPeer){
-      try{ myPeer.destroy(); }catch(e){}
-      myPeer = null;
-    }
-    isConnectedToUnity = false;
-
-    // Room lama ditinggalkan sepenuhnya -> playerId lama juga tidak lagi
-    // relevan (slot itu milik room lama, bukan room yang akan dituju
-    // berikutnya) DAN room code lama dibuang dari localStorage supaya
-    // tombol "Sambung Ulang" di kesempatan berikutnya tidak diam-diam
-    // menawarkan room yang sudah sengaja ditinggalkan.
-    playerId = null;
-    isHoldingBomb = false;
-    clearLastRoomCode();
-
-    hideDisconnectedScreen();
-    setUiState('idle-unassigned', {});
-    updateConnectPanelVisibility();
-    showConnectStatus('Masukkan room code baru.', '');
-    if(roomCodeInput){
-      roomCodeInput.value = '';
-      roomCodeInput.focus();
-    }
   }
 
   // ---- Deteksi native: WiFi/data HP sendiri terputus ----
