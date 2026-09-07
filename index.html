@@ -757,7 +757,7 @@
     }
 
     if(msg.type === 'slot_assigned'){
-      handleSlotAssigned(msg.playerId);
+      handleSlotAssigned(msg.playerId, msg.roomCode);
     } else if(msg.type === 'bomb_received'){
       handleBombReceived(msg.playerId);
     } else if(msg.type === 'eliminated'){
@@ -993,10 +993,21 @@
   // (Dipanggil manual oleh tombol debug sekarang; Fase 3 akan memanggil
   //  fungsi yang SAMA persis saat pesan datang dari DataChannel asli.)
 
-  function handleSlotAssigned(newPlayerId){
+  function handleSlotAssigned(newPlayerId, msgRoomCode){
     playerId = newPlayerId;
     isHoldingBomb = false;
     log(`← slot_assigned diterima, playerId = ${newPlayerId}`);
+
+    // Fase 3B FIX: selalu sinkronkan room code TERBARU ke localStorage di
+    // sini (bukan cuma sekali saat connect pertama di openConnectionTo).
+    // Room code Unity bisa berganti (kembali ke Lobby setelah GameOver)
+    // SEMENTARA device ini masih tersambung/baru saja reconnect — kalau
+    // tidak disinkronkan ulang di sini, tombol "Sambung Ulang" berikutnya
+    // akan mencoba room code LAMA yang sudah tidak exist.
+    if(msgRoomCode){
+      saveLastRoomCode(msgRoomCode);
+    }
+
     setUiState('idle');
     updateConnectPanelVisibility();
   }
