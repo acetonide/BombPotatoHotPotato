@@ -844,71 +844,36 @@
       disconnectedStatus.textContent = 'Tidak ada room code tersimpan.';
       return;
     }
+
+    // Fase 3B FIX (ganti strategi total): destroy()+new Peer(myPeerId) sama
+    // ID selalu race dengan broker PeerJS (destroy() async, ID belum tentu
+    // ke-release sebelum instance baru dibuat -> 'unavailable-id' berulang,
+    // bahkan dengan retry+delay manual). Scan QR ulang TERBUKTI selalu
+    // berhasil karena itu full page reload — browser & PeerJS mulai dari
+    // nol sepenuhnya, tidak ada instance lama untuk bentrok sama sekali.
+    // Jadi "Sambung Ulang" sekarang MENIRU PERSIS itu: reload halaman
+    // dengan ?room=<roomCode> di URL, bukan mencoba reconnect di-tempat.
     disconnectedStatus.textContent = 'Menyambungkan ulang...';
     disconnectedReconnectBtn.disabled = true;
 
-    // Fase 3B FIX: paksa bersihkan SEMUA sisa state lama sebelum mencoba
-    // lagi, alih-alih bergantung pada connectToUnity() menebak state
-    // internal myPeer (disconnected vs destroyed vs limbo) yang ternyata
-    // ambigu dan jadi sumber utama "Sambung Ulang" macet tanpa akhir.
-    // Reconnect instan SELALU mulai dari nol: peer lama di-destroy total,
-    // conn lama dibuang, baru createFreshPeer() dipanggil langsung.
-    if(unityConnection){
-      unityConnection.off('close');
-      try{ unityConnection.close(); }catch(e){}
-      unityConnection = null;
-    }
-    if(myPeer){
-      try{ myPeer.destroy(); }catch(e){}
-      myPeer = null;
-    }
-
-    createFreshPeer(roomCode);
-
-    // Re-enable tombol setelah jeda singkat kalau masih gagal (mis. Unity
-    // benar-benar mati/masih belum nyala lagi) supaya pemain bisa coba lagi,
-    // bukan macet permanen menekan tombol yang disabled.
-    setTimeout(() => {
-      if(!isConnectedToUnity){
-        disconnectedReconnectBtn.disabled = false;
-        disconnectedStatus.textContent = 'Belum berhasil, coba lagi.';
-      }
-    }, 4000);
+    const url = new URL(window.location.href);
+    url.searchParams.set('room', roomCode);
+    window.location.href = url.toString();
   }
 
   function handleUseDifferentRoomPressed(){
-    // Fase 3B tambahan: kembali ke halaman awal TANPA room code apapun,
-    // supaya pemain bisa scan QR baru / input manual room code lain dari
-    // nol — berguna kalau room code lama benar-benar sudah tidak valid
-    // (mis. sesi Unity lama sudah expired/room baru dibuat).
-    if(unityConnection){
-      unityConnection.off('close');
-      try{ unityConnection.close(); }catch(e){}
-      unityConnection = null;
-    }
-    if(myPeer){
-      try{ myPeer.destroy(); }catch(e){}
-      myPeer = null;
-    }
-    isConnectedToUnity = false;
-
-    // Room lama ditinggalkan sepenuhnya -> playerId lama juga tidak lagi
-    // relevan (slot itu milik room lama, bukan room yang akan dituju
-    // berikutnya) DAN room code lama dibuang dari localStorage supaya
-    // tombol "Sambung Ulang" di kesempatan berikutnya tidak diam-diam
-    // menawarkan room yang sudah sengaja ditinggalkan.
-    playerId = null;
-    isHoldingBomb = false;
+    // Fase 3B FIX (ganti strategi total, sama seperti handleInstantReconnectPressed):
+    // reload halaman TANPA ?room= sama sekali, alih-alih destroy()+reset
+    // state in-place yang race-prone dengan broker PeerJS. myPeerId (dari
+    // localStorage) tetap sama, jadi Unity masih akan mengenali device ini
+    // kalau nanti connect ke room yang sama lagi — cuma room code lama
+    // sengaja dibuang dari localStorage duluan supaya tidak diam-diam
+    // ditawarkan lagi lewat "Sambung Ulang" di kesempatan berikutnya.
     clearLastRoomCode();
 
-    hideDisconnectedScreen();
-    setUiState('idle-unassigned', {});
-    updateConnectPanelVisibility();
-    showConnectStatus('Masukkan room code baru.', '');
-    if(roomCodeInput){
-      roomCodeInput.value = '';
-      roomCodeInput.focus();
-    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete('room');
+    window.location.href = url.toString();
   }
 
   // ---- Deteksi native: WiFi/data HP sendiri terputus ----
