@@ -652,6 +652,28 @@
     createFreshPeer(roomCode);
   }
 
+  // Fase 3B FIX (akar masalah sebenarnya, BUKAN soal cara client bersih-bersih):
+  // PeerJS Cloud broker (server signaling publik yang dipakai proyek ini)
+  // TIDAK langsung tahu sebuah peer sudah mati kalau koneksinya terputus
+  // SECARA PAKSA (WiFi dimatikan, bukan close() yang graceful) — broker
+  // cuma tahu lewat heartbeat internalnya sendiri, dengan timeout DEFAULT
+  // di kisaran 60 detik. Selama window itu, broker MASIH menganggap
+  // myPeerId lama "aktif" dan MENOLAK siapapun (device manapun, browser
+  // manapun, termasuk instance baru di tab yang sama) yang coba pakai ID
+  // sama dengan error 'unavailable-id' — ini murni keputusan SERVER,
+  // TIDAK BISA diatasi dari sisi client dengan destroy()/reload secepat
+  // apapun. Retry sebelumnya (total ~12 detik) SELALU menyerah sebelum
+  // broker benar-benar clear ID lama — makanya selalu gagal sampai
+  // pemain mencoba lagi lewat browser lain SETELAH jeda waktu nyata (>60s).
+  //
+  // Fix: retry berkala (tiap 4 detik) SAMPAI ~100 detik total, dengan pesan
+  // jujur ke pemain, alih-alih menyerah cepat dengan pesan yang terkesan
+  // permanen. myPeerId TIDAK BOLEH diganti (harus tetap sama supaya Unity
+  // mengenali device ini via PlayerRegistry) — satu-satunya cara yang benar
+  // adalah menunggu broker, bukan menghindarinya.
+  const RECONNECT_RETRY_INTERVAL_MS = 4000;
+  const RECONNECT_MAX_RETRIES = 25; // ~100 detik total pada interval 4 detik
+
   function createFreshPeer(roomCode, retryCount){
     retryCount = retryCount || 0;
     myPeer = new Peer(myPeerId);
@@ -663,21 +685,16 @@
     myPeer.on('error', (err) => {
       log(`⚠ Peer error: ${err.type || err.message}`);
 
-      // Fase 3B FIX: 'unavailable-id' setelah destroy()+create baru terjadi
-      // karena broker PeerJS butuh waktu SESAAT untuk benar-benar clear ID
-      // lama, TIDAK instan mengikuti destroy() di sisi client. Retry LANGSUNG
-      // (tanpa delay) selalu kena race yang sama berulang-ulang — makanya
-      // sebelumnya user menekan "Sambung Ulang"/"Pakai Room Code Lain"
-      // berkali-kali tetap gagal. Sekarang di-retry OTOMATIS dengan delay
-      // singkat (bertambah tiap percobaan), maksimal beberapa kali, sebelum
-      // benar-benar menyerah dan minta user coba manual lagi.
-      if(err.type === 'unavailable-id' && retryCount < 5){
+      if(err.type === 'unavailable-id' && retryCount < RECONNECT_MAX_RETRIES){
         try{ myPeer.destroy(); }catch(e){}
         myPeer = null;
-        const delayMs = 800 * (retryCount + 1);
-        disconnectedStatus.textContent = `ID masih terpakai, coba lagi (${retryCount + 1})...`;
-        log(`unavailable-id, retry #${retryCount + 1} dalam ${delayMs}ms.`);
-        setTimeout(() => createFreshPeer(roomCode, retryCount + 1), delayMs);
+
+        const secondsWaited = Math.round(retryCount * RECONNECT_RETRY_INTERVAL_MS / 1000);
+        const statusMsg = `Menunggu koneksi lama benar-benar terputus... (${secondsWaited}s, bisa sampai ~1 menit)`;
+        disconnectedStatus.textContent = statusMsg;
+        showConnectStatus(statusMsg, '');
+        log(`unavailable-id, retry #${retryCount + 1} dalam ${RECONNECT_RETRY_INTERVAL_MS}ms.`);
+        setTimeout(() => createFreshPeer(roomCode, retryCount + 1), RECONNECT_RETRY_INTERVAL_MS);
         return;
       }
 
@@ -690,7 +707,7 @@
       }
 
       showConnectStatus('Koneksi gagal, coba jaringan WiFi lain', 'err');
-      disconnectedStatus.textContent = 'Belum berhasil, coba lagi.';
+      disconnectedStatus.textContent = 'Belum berhasil setelah ~1 menit. Coba tekan Sambung Ulang sekali lagi.';
       disconnectedReconnectBtn.disabled = false;
     });
 
@@ -845,35 +862,59 @@
       return;
     }
 
-    // Fase 3B FIX (ganti strategi total): destroy()+new Peer(myPeerId) sama
-    // ID selalu race dengan broker PeerJS (destroy() async, ID belum tentu
-    // ke-release sebelum instance baru dibuat -> 'unavailable-id' berulang,
-    // bahkan dengan retry+delay manual). Scan QR ulang TERBUKTI selalu
-    // berhasil karena itu full page reload — browser & PeerJS mulai dari
-    // nol sepenuhnya, tidak ada instance lama untuk bentrok sama sekali.
-    // Jadi "Sambung Ulang" sekarang MENIRU PERSIS itu: reload halaman
-    // dengan ?room=<roomCode> di URL, bukan mencoba reconnect di-tempat.
     disconnectedStatus.textContent = 'Menyambungkan ulang...';
     disconnectedReconnectBtn.disabled = true;
 
-    const url = new URL(window.location.href);
-    url.searchParams.set('room', roomCode);
-    window.location.href = url.toString();
+    if(unityConnection){
+      unityConnection.off('close');
+      try{ unityConnection.close(); }catch(e){}
+      unityConnection = null;
+    }
+    if(myPeer){
+      try{ myPeer.destroy(); }catch(e){}
+      myPeer = null;
+    }
+
+    // Akar masalah sebenarnya BUKAN soal cara membersihkan instance lama di
+    // sini (destroy() ini sudah cukup) — melainkan broker PeerJS yang masih
+    // menahan myPeerId lama sampai heartbeat timeout-nya sendiri lewat
+    // (lihat komentar besar di createFreshPeer). createFreshPeer SUDAH
+    // menangani retry sabar untuk itu, jadi cukup panggil langsung di sini.
+    createFreshPeer(roomCode);
   }
 
   function handleUseDifferentRoomPressed(){
-    // Fase 3B FIX (ganti strategi total, sama seperti handleInstantReconnectPressed):
-    // reload halaman TANPA ?room= sama sekali, alih-alih destroy()+reset
-    // state in-place yang race-prone dengan broker PeerJS. myPeerId (dari
-    // localStorage) tetap sama, jadi Unity masih akan mengenali device ini
-    // kalau nanti connect ke room yang sama lagi — cuma room code lama
-    // sengaja dibuang dari localStorage duluan supaya tidak diam-diam
-    // ditawarkan lagi lewat "Sambung Ulang" di kesempatan berikutnya.
+    // Kembali ke panel input manual dari nol — bukan reconnect ke room
+    // manapun, jadi tidak butuh retry logic (peerId belum tentu bentrok
+    // dengan room baru yang akan diketik/discan pemain).
+    if(unityConnection){
+      unityConnection.off('close');
+      try{ unityConnection.close(); }catch(e){}
+      unityConnection = null;
+    }
+    if(myPeer){
+      try{ myPeer.destroy(); }catch(e){}
+      myPeer = null;
+    }
+    isConnectedToUnity = false;
+
+    // Room lama ditinggalkan sepenuhnya -> playerId lama juga tidak lagi
+    // relevan (slot itu milik room lama, bukan room yang akan dituju
+    // berikutnya) DAN room code lama dibuang dari localStorage supaya
+    // tombol "Sambung Ulang" di kesempatan berikutnya tidak diam-diam
+    // menawarkan room yang sudah sengaja ditinggalkan.
+    playerId = null;
+    isHoldingBomb = false;
     clearLastRoomCode();
 
-    const url = new URL(window.location.href);
-    url.searchParams.delete('room');
-    window.location.href = url.toString();
+    hideDisconnectedScreen();
+    setUiState('idle-unassigned', {});
+    updateConnectPanelVisibility();
+    showConnectStatus('Masukkan room code baru.', '');
+    if(roomCodeInput){
+      roomCodeInput.value = '';
+      roomCodeInput.focus();
+    }
   }
 
   // ---- Deteksi native: WiFi/data HP sendiri terputus ----
