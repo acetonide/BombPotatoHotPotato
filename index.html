@@ -285,6 +285,17 @@
   }
   #disconnectedReconnectBtn:active{ background: var(--hot-2); }
   #disconnectedReconnectBtn:disabled{ opacity: 0.5; }
+  #disconnectedUseOtherRoomBtn{
+    margin-top: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 10px 20px;
+    border-radius: 10px;
+    border: 1px solid var(--ember);
+    background: transparent;
+    color: var(--ink-dim);
+  }
+  #disconnectedUseOtherRoomBtn:active{ background: var(--ember); }
   #disconnectedStatus{
     font-size: 12px;
     color: var(--ink-dim);
@@ -489,6 +500,7 @@
   <div id="disconnectedSubline">Koneksi ke layar utama terputus.</div>
   <div id="disconnectedRoomCode"></div>
   <button id="disconnectedReconnectBtn" onclick="handleInstantReconnectPressed()">Sambung Ulang</button>
+  <button id="disconnectedUseOtherRoomBtn" onclick="handleUseDifferentRoomPressed()">Pakai Room Code Lain</button>
   <div id="disconnectedStatus"></div>
 </div>
 
@@ -588,6 +600,9 @@
   function getLastRoomCode(){
     try{ return localStorage.getItem(ROOM_CODE_STORAGE_KEY); } catch(e){ return null; }
   }
+  function clearLastRoomCode(){
+    try{ localStorage.removeItem(ROOM_CODE_STORAGE_KEY); } catch(e){}
+  }
 
   function connectToUnity(roomCode){
     if(!roomCode){
@@ -609,14 +624,35 @@
     showConnectStatus('Menghubungkan...', '');
     log(`Mencoba connect ke room ${roomCode} (peer id saya: ${myPeerId})`);
 
+    // Fase 3B FIX: sebelumnya kode ini reuse myPeer lama SELAMA belum
+    // 'destroyed', TERMASUK saat myPeer cuma disconnected-dari-broker
+    // (myPeer.disconnected === true, bukan destroyed). Peer.connect() pada
+    // broker-connection yang sudah disconnected TIDAK PERNAH berhasil dan
+    // TIDAK selalu fire error yang jelas — inilah penyebab "Sambung Ulang"
+    // macet tanpa akhir walau WiFi sudah nyala lagi. Sekarang ditangani 3
+    // kasus eksplisit:
     if(myPeer && !myPeer.destroyed){
-      // Sudah ada Peer instance dari attempt sebelumnya (mis. retry manual
-      // setelah gagal) — reuse, jangan bikin instance baru dengan ID sama
-      // (PeerJS broker akan menolak ID yang masih aktif).
+      if(myPeer.disconnected){
+        // Masih hidup tapi broker connection putus -> reconnect() DULU
+        // (API resmi PeerJS untuk kasus ini), baru openConnectionTo begitu
+        // broker connection pulih lagi (lewat myPeer.on('open') di bawah,
+        // yang HARUS tetap ke-attach walau instance lama — lihat re-attach
+        // 'open' listener sekali lagi sebelum reconnect()).
+        log('myPeer masih ada tapi disconnected dari broker -> reconnect() dulu.');
+        myPeer.once('open', () => openConnectionTo(roomCode));
+        myPeer.reconnect();
+        return;
+      }
+      // Masih hidup & masih connected ke broker -> aman langsung reuse.
       openConnectionTo(roomCode);
       return;
     }
 
+    // myPeer null ATAU destroyed -> aman bikin instance baru dari nol.
+    createFreshPeer(roomCode);
+  }
+
+  function createFreshPeer(roomCode){
     myPeer = new Peer(myPeerId);
 
     myPeer.on('open', () => {
@@ -627,6 +663,17 @@
       log(`⚠ Peer error: ${err.type || err.message}`);
       isConnectedToUnity = false;
       updateConnectPanelVisibility();
+
+      // Fase 3B FIX: ID masih dianggap terpakai oleh broker (sisa sesi lama
+      // yang belum expired di sisi server) — ini pola error KHAS setelah
+      // disconnect-lalu-reconnect cepat. Buang instance ini SEPENUHNYA,
+      // supaya percobaan reconnect berikutnya mulai dari createFreshPeer,
+      // bukan nyangkut di instance rusak yang sama berulang-ulang.
+      if(err.type === 'unavailable-id' || err.type === 'peer-unavailable'){
+        try{ myPeer.destroy(); }catch(e){}
+        myPeer = null;
+      }
+
       showConnectStatus('Koneksi gagal, coba jaringan WiFi lain', 'err');
     });
 
@@ -639,6 +686,18 @@
   }
 
   function openConnectionTo(roomCode){
+    // Fase 3B FIX: kalau ada DataConnection lama yang masih nyangkut
+    // (mis. dari attempt sebelumnya yang belum sempat close event-nya
+    // ke-fire), tutup dulu SECARA EKSPLISIT supaya listener 'close' lama
+    // tidak ikut fire belakangan dan salah memicu showDisconnectedScreen
+    // untuk koneksi yang BARU. Ini akar masalah "TERPUTUS muncul lagi
+    // padahal baru saja scan/connect fresh".
+    if(unityConnection){
+      unityConnection.off('close');
+      try{ unityConnection.close(); }catch(e){}
+      unityConnection = null;
+    }
+
     // reliable/ordered: default DataConnection PeerJS SUDAH ordered+reliable
     // selama tidak di-set reliable:false secara eksplisit (Interface Contract
     // Section 7.3 — TIDAK di-override di sini, jadi sudah sesuai kontrak).
@@ -659,6 +718,12 @@
     });
 
     conn.on('close', () => {
+      // Fase 3B FIX: hanya proses close ini kalau conn INI masih conn yang
+      // aktif (unityConnection === conn) — mencegah event 'close' dari
+      // DataConnection LAMA yang sudah dibuang openConnectionTo() di atas
+      // tetap sempat fire dan salah memicu layar Terputus untuk sesi baru.
+      if(unityConnection !== conn) return;
+
       isConnectedToUnity = false;
       unityConnection = null;
       updateConnectPanelVisibility();
@@ -668,6 +733,7 @@
     });
 
     conn.on('error', (err) => {
+      if(unityConnection !== conn && unityConnection !== null) return;
       log(`⚠ DataConnection error: ${err.type || err.message}`);
       showConnectStatus('Koneksi gagal, coba jaringan WiFi lain', 'err');
     });
@@ -764,11 +830,23 @@
     disconnectedStatus.textContent = 'Menyambungkan ulang...';
     disconnectedReconnectBtn.disabled = true;
 
-    // reconnect ke room code yang SAMA, pakai myPeerId yang SAMA juga
-    // (persisten di localStorage) — Unity akan mencocokkan ke slot lama
-    // via PlayerRegistry (Interface Contract Section 0 & 1A), tanpa perlu
-    // scan QR ulang sama sekali.
-    connectToUnity(roomCode);
+    // Fase 3B FIX: paksa bersihkan SEMUA sisa state lama sebelum mencoba
+    // lagi, alih-alih bergantung pada connectToUnity() menebak state
+    // internal myPeer (disconnected vs destroyed vs limbo) yang ternyata
+    // ambigu dan jadi sumber utama "Sambung Ulang" macet tanpa akhir.
+    // Reconnect instan SELALU mulai dari nol: peer lama di-destroy total,
+    // conn lama dibuang, baru createFreshPeer() dipanggil langsung.
+    if(unityConnection){
+      unityConnection.off('close');
+      try{ unityConnection.close(); }catch(e){}
+      unityConnection = null;
+    }
+    if(myPeer){
+      try{ myPeer.destroy(); }catch(e){}
+      myPeer = null;
+    }
+
+    createFreshPeer(roomCode);
 
     // Re-enable tombol setelah jeda singkat kalau masih gagal (mis. Unity
     // benar-benar mati/masih belum nyala lagi) supaya pemain bisa coba lagi,
@@ -779,6 +857,41 @@
         disconnectedStatus.textContent = 'Belum berhasil, coba lagi.';
       }
     }, 4000);
+  }
+
+  function handleUseDifferentRoomPressed(){
+    // Fase 3B tambahan: kembali ke halaman awal TANPA room code apapun,
+    // supaya pemain bisa scan QR baru / input manual room code lain dari
+    // nol — berguna kalau room code lama benar-benar sudah tidak valid
+    // (mis. sesi Unity lama sudah expired/room baru dibuat).
+    if(unityConnection){
+      unityConnection.off('close');
+      try{ unityConnection.close(); }catch(e){}
+      unityConnection = null;
+    }
+    if(myPeer){
+      try{ myPeer.destroy(); }catch(e){}
+      myPeer = null;
+    }
+    isConnectedToUnity = false;
+
+    // Room lama ditinggalkan sepenuhnya -> playerId lama juga tidak lagi
+    // relevan (slot itu milik room lama, bukan room yang akan dituju
+    // berikutnya) DAN room code lama dibuang dari localStorage supaya
+    // tombol "Sambung Ulang" di kesempatan berikutnya tidak diam-diam
+    // menawarkan room yang sudah sengaja ditinggalkan.
+    playerId = null;
+    isHoldingBomb = false;
+    clearLastRoomCode();
+
+    hideDisconnectedScreen();
+    setUiState('idle-unassigned', {});
+    updateConnectPanelVisibility();
+    showConnectStatus('Masukkan room code baru.', '');
+    if(roomCodeInput){
+      roomCodeInput.value = '';
+      roomCodeInput.focus();
+    }
   }
 
   // ---- Deteksi native: WiFi/data HP sendiri terputus ----
