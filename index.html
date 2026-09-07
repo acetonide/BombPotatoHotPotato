@@ -652,7 +652,8 @@
     createFreshPeer(roomCode);
   }
 
-  function createFreshPeer(roomCode){
+  function createFreshPeer(roomCode, retryCount){
+    retryCount = retryCount || 0;
     myPeer = new Peer(myPeerId);
 
     myPeer.on('open', () => {
@@ -661,20 +662,36 @@
 
     myPeer.on('error', (err) => {
       log(`⚠ Peer error: ${err.type || err.message}`);
+
+      // Fase 3B FIX: 'unavailable-id' setelah destroy()+create baru terjadi
+      // karena broker PeerJS butuh waktu SESAAT untuk benar-benar clear ID
+      // lama, TIDAK instan mengikuti destroy() di sisi client. Retry LANGSUNG
+      // (tanpa delay) selalu kena race yang sama berulang-ulang — makanya
+      // sebelumnya user menekan "Sambung Ulang"/"Pakai Room Code Lain"
+      // berkali-kali tetap gagal. Sekarang di-retry OTOMATIS dengan delay
+      // singkat (bertambah tiap percobaan), maksimal beberapa kali, sebelum
+      // benar-benar menyerah dan minta user coba manual lagi.
+      if(err.type === 'unavailable-id' && retryCount < 5){
+        try{ myPeer.destroy(); }catch(e){}
+        myPeer = null;
+        const delayMs = 800 * (retryCount + 1);
+        disconnectedStatus.textContent = `ID masih terpakai, coba lagi (${retryCount + 1})...`;
+        log(`unavailable-id, retry #${retryCount + 1} dalam ${delayMs}ms.`);
+        setTimeout(() => createFreshPeer(roomCode, retryCount + 1), delayMs);
+        return;
+      }
+
       isConnectedToUnity = false;
       updateConnectPanelVisibility();
 
-      // Fase 3B FIX: ID masih dianggap terpakai oleh broker (sisa sesi lama
-      // yang belum expired di sisi server) — ini pola error KHAS setelah
-      // disconnect-lalu-reconnect cepat. Buang instance ini SEPENUHNYA,
-      // supaya percobaan reconnect berikutnya mulai dari createFreshPeer,
-      // bukan nyangkut di instance rusak yang sama berulang-ulang.
       if(err.type === 'unavailable-id' || err.type === 'peer-unavailable'){
         try{ myPeer.destroy(); }catch(e){}
         myPeer = null;
       }
 
       showConnectStatus('Koneksi gagal, coba jaringan WiFi lain', 'err');
+      disconnectedStatus.textContent = 'Belum berhasil, coba lagi.';
+      disconnectedReconnectBtn.disabled = false;
     });
 
     myPeer.on('disconnected', () => {
